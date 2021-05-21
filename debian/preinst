@@ -1,0 +1,14 @@
+#!/bin/sh
+
+case "$1" in
+	install|upgrade|abort-upgrade)
+		# Remove all old versions
+		rm -f /boot/overlays/hgvc4.dtbo > /dev/null 2>&1
+		rm -Rf /var/lib/dkms/hgvc4/*
+		dkms remove hgvc4/1.0.0 --all
+		;;
+esac
+
+#DEBHELPER#
+
+exit 0

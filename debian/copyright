@@ -1,0 +1,7 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: hgvc4
+Upstream-Contact: Dr. Sathya Laufer <s.laufer@homegear.email>
+
+Files: *
+Copyright: Copyright (C) 2016 Broadcom Limited
+License: GPL-2

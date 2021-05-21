@@ -1,0 +1,9 @@
+Source: hgvc4
+Priority: optional
+Maintainer: Dr. Sathya Laufer <s.laufer@homegear.email>
+Build-Depends: debhelper (>= 10), dkms
+
+Package: hgvc4
+Architecture: all
+Depends: dkms, raspberrypi-kernel-headers
+Description: Modified VC4 driver with multiple DSI stability fixes
