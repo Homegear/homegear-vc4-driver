@@ -30,6 +30,8 @@
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 
+#include <linux/mutex.h>
+
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_edid.h>
@@ -535,6 +537,10 @@
  */
 #define DSI1_ID			0x8c
 
+#ifdef USE_DSI_MUTEX
+struct mutex the_mutex;
+#endif
+
 struct vc4_dsi_variant {
 	/* Whether we're on bcm2835's DSI0 or DSI1. */
 	unsigned int port;
@@ -746,7 +752,7 @@ static void vc4_dsi_ulps(struct vc4_dsi *dsi, bool ulps)
 
 	DSI_PORT_WRITE(STAT, stat_ulps);
 	DSI_PORT_WRITE(PHYC, DSI_PORT_READ(PHYC) | phyc_ulps);
-	ret = wait_for((DSI_PORT_READ(STAT) & stat_ulps) == stat_ulps, 200);
+	ret = wait_for((DSI_PORT_READ(STAT) & stat_ulps) == stat_ulps, /*200*/500);
 	if (ret) {
 		dev_warn(&dsi->pdev->dev,
 			 "Timeout waiting for DSI ULPS entry: STAT 0x%08x",
@@ -765,7 +771,7 @@ static void vc4_dsi_ulps(struct vc4_dsi *dsi, bool ulps)
 
 	DSI_PORT_WRITE(STAT, stat_stop);
 	DSI_PORT_WRITE(PHYC, DSI_PORT_READ(PHYC) & ~phyc_ulps);
-	ret = wait_for((DSI_PORT_READ(STAT) & stat_stop) == stat_stop, 200);
+	ret = wait_for((DSI_PORT_READ(STAT) & stat_stop) == stat_stop, /*200*/500);
 	if (ret) {
 		dev_warn(&dsi->pdev->dev,
 			 "Timeout waiting for DSI STOP entry: STAT 0x%08x",
@@ -808,18 +814,20 @@ static void vc4_dsi_encoder_disable(struct drm_encoder *encoder)
 			break;
 	}
 
-	vc4_dsi_ulps(dsi, true);
+	//vc4_dsi_ulps(dsi, true);
 
 	list_for_each_entry_from(iter, &dsi->bridge_chain, chain_node) {
 		if (iter->funcs->post_disable)
 			iter->funcs->post_disable(iter);
 	}
 
+/*
 	clk_disable_unprepare(dsi->pll_phy_clock);
 	clk_disable_unprepare(dsi->escape_clock);
 	clk_disable_unprepare(dsi->pixel_clock);
 
 	pm_runtime_put(dev);
+*/
 }
 
 /* Extends the mode's blank intervals to handle BCM2835's integer-only
@@ -890,12 +898,19 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	unsigned long dsip_clock;
 	unsigned long phy_clock;
 	int ret;
+	u32 disp0_ctrl;
 
+	/*
 	ret = pm_runtime_get_sync(dev);
 	if (ret) {
 		DRM_ERROR("Failed to runtime PM enable on DSI%d\n", dsi->variant->port);
 		return;
 	}
+	*/
+
+#ifdef USE_DSI_MUTEX
+    mutex_lock(&the_mutex);
+#endif
 
 	if (debug_dump_regs) {
 		struct drm_printer p = drm_info_printer(&dsi->pdev->dev);
@@ -975,12 +990,20 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	ret = clk_prepare_enable(dsi->escape_clock);
 	if (ret) {
 		DRM_ERROR("Failed to turn on DSI escape clock: %d\n", ret);
+
+#ifdef USE_DSI_MUTEX
+        mutex_unlock(&the_mutex);
+#endif
 		return;
 	}
 
 	ret = clk_prepare_enable(dsi->pll_phy_clock);
 	if (ret) {
 		DRM_ERROR("Failed to turn on DSI PLL: %d\n", ret);
+
+#ifdef USE_DSI_MUTEX
+        mutex_unlock(&the_mutex);
+#endif
 		return;
 	}
 
@@ -1003,6 +1026,11 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	ret = clk_prepare_enable(dsi->pixel_clock);
 	if (ret) {
 		DRM_ERROR("Failed to turn on DSI pixel clock: %d\n", ret);
+
+#ifdef USE_DSI_MUTEX
+        mutex_unlock(&the_mutex);
+#endif
+
 		return;
 	}
 
@@ -1089,9 +1117,9 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	/* LP receive timeout in HS clocks. */
 	DSI_PORT_WRITE(LPRX_TO_CNT, 0xffffff);
 	/* Bus turnaround timeout */
-	DSI_PORT_WRITE(TA_TO_CNT, 100000);
+	DSI_PORT_WRITE(TA_TO_CNT, 500000);
 	/* Display reset sequence timeout */
-	DSI_PORT_WRITE(PR_TO_CNT, 100000);
+	DSI_PORT_WRITE(PR_TO_CNT, 500000);
 
 	/* Set up DISP1 for transferring long command payloads through
 	 * the pixfifo.
@@ -1112,32 +1140,44 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 		       DSI_PORT_READ(PHY_AFEC0) &
 		       ~DSI_PORT_BIT(PHY_AFEC0_RESET));
 
-	vc4_dsi_ulps(dsi, false);
+#ifdef USE_DSI_MUTEX
+    mutex_unlock(&the_mutex);
+#endif // USE_DSI_MUTEX
+
+	//vc4_dsi_ulps(dsi, false);
 
 	list_for_each_entry_reverse(iter, &dsi->bridge_chain, chain_node) {
 		if (iter->funcs->pre_enable)
 			iter->funcs->pre_enable(iter);
 	}
 
-	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
-		DSI_PORT_WRITE(DISP0_CTRL,
-			       VC4_SET_FIELD(dsi->divider,
-					     DSI_DISP0_PIX_CLK_DIV) |
-			       VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
-			       VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME,
-					     DSI_DISP0_LP_STOP_CTRL) |
-			       DSI_DISP0_ST_END |
-			       DSI_DISP0_ENABLE);
-	} else {
-		DSI_PORT_WRITE(DISP0_CTRL,
-			       DSI_DISP0_COMMAND_MODE |
-			       DSI_DISP0_ENABLE);
-	}
+#ifdef USE_DSI_MUTEX
+    mutex_lock(&the_mutex);
+#endif // USE_DSI_MUTEX
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
+		disp0_ctrl = VC4_SET_FIELD(dsi->divider,
+					   DSI_DISP0_PIX_CLK_DIV) |
+			     VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
+			     VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME,
+					   DSI_DISP0_LP_STOP_CTRL) |
+			     DSI_DISP0_ST_END;
+	else
+		disp0_ctrl = DSI_DISP0_COMMAND_MODE;
+
+    //DSI_PORT_WRITE(DISP0_CTRL, disp0_ctrl);
+    DSI_PORT_WRITE(DISP0_CTRL, disp0_ctrl | DSI_DISP0_ENABLE);
+
+#ifdef USE_DSI_MUTEX
+    mutex_unlock(&the_mutex);
+#endif // USE_DSI_MUTEX
 
 	list_for_each_entry(iter, &dsi->bridge_chain, chain_node) {
 		if (iter->funcs->enable)
 			iter->funcs->enable(iter);
 	}
+
+	//DSI_PORT_WRITE(DISP0_CTRL, disp0_ctrl | DSI_DISP0_ENABLE);
 
 	if (debug_dump_regs) {
 		struct drm_printer p = drm_info_printer(&dsi->pdev->dev);
@@ -1155,6 +1195,10 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	int i, ret;
 	bool is_long = mipi_dsi_packet_format_is_long(msg->type);
 	u32 cmd_fifo_len = 0, pix_fifo_len = 0;
+
+#ifdef USE_DSI_MUTEX
+	mutex_lock(&the_mutex);
+#endif // USE_DSI_MUTEX
 
 	mipi_dsi_create_packet(&packet, msg);
 
@@ -1301,6 +1345,10 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 		}
 	}
 
+#ifdef USE_DSI_MUTEX
+    mutex_unlock(&the_mutex);
+#endif // USE_DSI_MUTEX
+
 	return ret;
 
 reset_fifo_and_return:
@@ -1314,6 +1362,11 @@ reset_fifo_and_return:
 
 	DSI_PORT_WRITE(TXPKT1C, 0);
 	DSI_PORT_WRITE(INT_EN, DSI_PORT_BIT(INTERRUPTS_ALWAYS_ENABLED));
+
+#ifdef USE_DSI_MUTEX
+    mutex_unlock(&the_mutex);
+#endif // USE_DSI_MUTEX
+
 	return ret;
 }
 
@@ -1425,6 +1478,7 @@ static void dsi_handle_error(struct vc4_dsi *dsi,
 static irqreturn_t vc4_dsi_irq_defer_to_thread_handler(int irq, void *data)
 {
 	struct vc4_dsi *dsi = data;
+
 	u32 stat = DSI_PORT_READ(INT_STAT);
 
 	if (!stat)
@@ -1715,6 +1769,7 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 	vc4_debugfs_add_regset32(drm, dsi->variant->debugfs_name, &dsi->regset);
 
 	pm_runtime_enable(dev);
+	pm_runtime_forbid(dev);
 
 	return 0;
 }
@@ -1746,6 +1801,10 @@ static int vc4_dsi_dev_probe(struct platform_device *pdev)
 	struct vc4_dsi *dsi;
 	int ret;
 
+#ifdef USE_DSI_MUTEX
+	mutex_init(&the_mutex);
+#endif // USE_DSI_MUTEX
+
 	dsi = devm_kzalloc(dev, sizeof(*dsi), GFP_KERNEL);
 	if (!dsi)
 		return -ENOMEM;
@@ -1771,6 +1830,8 @@ static int vc4_dsi_dev_probe(struct platform_device *pdev)
 		mipi_dsi_host_unregister(&dsi->dsi_host);
 		return ret;
 	}
+
+
 
 	return 0;
 }

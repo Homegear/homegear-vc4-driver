@@ -41,7 +41,7 @@
 #include "vc4_drv.h"
 #include "vc4_regs.h"
 
-#define DRIVER_NAME "hgvc4"
+#define DRIVER_NAME "vc4"
 #define DRIVER_DESC "Broadcom VC4 graphics"
 #define DRIVER_DATE "20140616"
 #define DRIVER_MAJOR 0
@@ -247,7 +247,12 @@ static void vc4_match_add_drivers(struct device *dev,
 }
 
 const struct of_device_id vc4_dma_range_matches[] = {
-	{ .compatible = "brcm,bcm2835-hgv3d" },
+	{ .compatible = "brcm,bcm2835-hvs" },
+	{ .compatible = "brcm,bcm2711-hvs" },
+	{ .compatible = "raspberrypi,rpi-firmware-kms" },
+	{ .compatible = "brcm,bcm2835-v3d" },
+	{ .compatible = "brcm,cygnus-v3d" },
+	{ .compatible = "brcm,vc4-v3d" },
 	{}
 };
 
@@ -389,7 +394,9 @@ static int vc4_platform_drm_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id vc4_of_match[] = {
-	{ .compatible = "brcm,bcm2835-hgvc4", },
+	{ .compatible = "brcm,bcm2711-vc5", },
+	{ .compatible = "brcm,bcm2835-vc4", },
+	{ .compatible = "brcm,cygnus-vc4", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, vc4_of_match);
@@ -398,7 +405,7 @@ static struct platform_driver vc4_platform_driver = {
 	.probe		= vc4_platform_drm_probe,
 	.remove		= vc4_platform_drm_remove,
 	.driver		= {
-		.name	= "hgvc4-drm",
+		.name	= "vc4-drm",
 		.of_match_table = vc4_of_match,
 	},
 };
@@ -425,7 +432,7 @@ static void __exit vc4_drm_unregister(void)
 module_init(vc4_drm_register);
 module_exit(vc4_drm_unregister);
 
-MODULE_ALIAS("platform:hgvc4-drm");
+MODULE_ALIAS("platform:vc4-drm");
 MODULE_DESCRIPTION("Broadcom VC4 DRM Driver");
 MODULE_AUTHOR("Eric Anholt <eric@anholt.net>");
 MODULE_LICENSE("GPL v2");
