@@ -30,8 +30,6 @@
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 
-#include <linux/mutex.h>
-
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_edid.h>
@@ -150,10 +148,11 @@
 # define DSI_DISP_HACTIVE_NULL		BIT(10)
 /* Transmit blanking packet only during vblank, instead of allowing LP-STOP. */
 # define DSI_DISP_VBLP_CTRL		BIT(9)
-/* Transmit blanking packet only during HFP, instead of allowing LP-STOP. */
+/* Transmit blanking packet only during HFP = horizontal front porch, instead of allowing LP-STOP. */
 # define DSI_DISP_HFP_CTRL		BIT(8)
-/* Transmit blanking packet only during HBP, instead of allowing LP-STOP. */
+/* Transmit blanking packet only during HBP = horizontal back porch, instead of allowing LP-STOP. */
 # define DSI_DISP_HBP_CTRL		BIT(7)
+
 # define DSI_DISP0_CHANNEL_MASK		VC4_MASK(6, 5)
 # define DSI_DISP0_CHANNEL_SHIFT	5
 /* Enables end events for HSYNC/VSYNC, not just start events. */
@@ -537,10 +536,6 @@
  */
 #define DSI1_ID			0x8c
 
-#ifdef USE_DSI_MUTEX
-struct mutex the_mutex;
-#endif
-
 struct vc4_dsi_variant {
 	/* Whether we're on bcm2835's DSI0 or DSI1. */
 	unsigned int port;
@@ -805,6 +800,7 @@ static void vc4_dsi_encoder_disable(struct drm_encoder *encoder)
 	struct vc4_dsi *dsi = vc4_encoder->dsi;
 	struct device *dev = &dsi->pdev->dev;
 	struct drm_bridge *iter;
+	u32 disp0_ctrl;
 
 	list_for_each_entry_reverse(iter, &dsi->bridge_chain, chain_node) {
 		if (iter->funcs->disable)
@@ -874,8 +870,7 @@ static bool vc4_dsi_encoder_mode_fixup(struct drm_encoder *encoder,
 	adjusted_mode->clock = pixel_clock_hz / 1000;
 
 	/* Given the new pixel clock, adjust HFP to keep vrefresh the same. */
-	adjusted_mode->htotal = adjusted_mode->clock * mode->htotal /
-				mode->clock;
+	adjusted_mode->htotal = adjusted_mode->clock * mode->htotal / mode->clock;
 	adjusted_mode->hsync_end += adjusted_mode->htotal - mode->htotal;
 	adjusted_mode->hsync_start += adjusted_mode->htotal - mode->htotal;
 
@@ -907,10 +902,6 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 		return;
 	}
 	*/
-
-#ifdef USE_DSI_MUTEX
-    mutex_lock(&the_mutex);
-#endif
 
 	if (debug_dump_regs) {
 		struct drm_printer p = drm_info_printer(&dsi->pdev->dev);
@@ -991,9 +982,6 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	if (ret) {
 		DRM_ERROR("Failed to turn on DSI escape clock: %d\n", ret);
 
-#ifdef USE_DSI_MUTEX
-        mutex_unlock(&the_mutex);
-#endif
 		return;
 	}
 
@@ -1001,9 +989,6 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	if (ret) {
 		DRM_ERROR("Failed to turn on DSI PLL: %d\n", ret);
 
-#ifdef USE_DSI_MUTEX
-        mutex_unlock(&the_mutex);
-#endif
 		return;
 	}
 
@@ -1026,10 +1011,6 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	ret = clk_prepare_enable(dsi->pixel_clock);
 	if (ret) {
 		DRM_ERROR("Failed to turn on DSI pixel clock: %d\n", ret);
-
-#ifdef USE_DSI_MUTEX
-        mutex_unlock(&the_mutex);
-#endif
 
 		return;
 	}
@@ -1108,9 +1089,7 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 			VC4_SET_FIELD(lpx - 1, DSI0_PHYC_ESC_CLK_LPDT) :
 			VC4_SET_FIELD(lpx - 1, DSI1_PHYC_ESC_CLK_LPDT)));
 
-	DSI_PORT_WRITE(CTRL,
-		       DSI_PORT_READ(CTRL) |
-		       DSI_CTRL_CAL_BYTE);
+	DSI_PORT_WRITE(CTRL, DSI_PORT_READ(CTRL) | DSI_CTRL_CAL_BYTE);
 
 	/* HS timeout in HS clock cycles: disabled. */
 	DSI_PORT_WRITE(HSTX_TO_CNT, 0);
@@ -1124,10 +1103,7 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	/* Set up DISP1 for transferring long command payloads through
 	 * the pixfifo.
 	 */
-	DSI_PORT_WRITE(DISP1_CTRL,
-		       VC4_SET_FIELD(DSI_DISP1_PFORMAT_32BIT_LE,
-				     DSI_DISP1_PFORMAT) |
-		       DSI_DISP1_ENABLE);
+	DSI_PORT_WRITE(DISP1_CTRL, VC4_SET_FIELD(DSI_DISP1_PFORMAT_32BIT_LE, DSI_DISP1_PFORMAT) | DSI_DISP1_ENABLE);
 
 	/* Ungate the block. */
 	if (dsi->variant->port == 0)
@@ -1136,13 +1112,7 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 		DSI_PORT_WRITE(CTRL, DSI_PORT_READ(CTRL) | DSI1_CTRL_EN);
 
 	/* Bring AFE out of reset. */
-	DSI_PORT_WRITE(PHY_AFEC0,
-		       DSI_PORT_READ(PHY_AFEC0) &
-		       ~DSI_PORT_BIT(PHY_AFEC0_RESET));
-
-#ifdef USE_DSI_MUTEX
-    mutex_unlock(&the_mutex);
-#endif // USE_DSI_MUTEX
+	DSI_PORT_WRITE(PHY_AFEC0, DSI_PORT_READ(PHY_AFEC0) & ~DSI_PORT_BIT(PHY_AFEC0_RESET));
 
 	//vc4_dsi_ulps(dsi, false);
 
@@ -1151,26 +1121,19 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 			iter->funcs->pre_enable(iter);
 	}
 
-#ifdef USE_DSI_MUTEX
-    mutex_lock(&the_mutex);
-#endif // USE_DSI_MUTEX
-
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
-		disp0_ctrl = VC4_SET_FIELD(dsi->divider,
-					   DSI_DISP0_PIX_CLK_DIV) |
-			     VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
-			     VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME,
-					   DSI_DISP0_LP_STOP_CTRL) |
-			     DSI_DISP0_ST_END;
+		disp0_ctrl = VC4_SET_FIELD(dsi->divider, DSI_DISP0_PIX_CLK_DIV) |
+			         VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
+			         VC4_SET_FIELD(DSI_DISP0_LP_STOP_DISABLE, DSI_DISP0_LP_STOP_CTRL) |
+			         //VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME, DSI_DISP0_LP_STOP_CTRL) |
+   			         DSI_DISP_VBLP_CTRL |
+   			         //DSI_DISP_HACTIVE_NULL |
+                     DSI_DISP0_ST_END;
 	else
 		disp0_ctrl = DSI_DISP0_COMMAND_MODE;
 
     //DSI_PORT_WRITE(DISP0_CTRL, disp0_ctrl);
     DSI_PORT_WRITE(DISP0_CTRL, disp0_ctrl | DSI_DISP0_ENABLE);
-
-#ifdef USE_DSI_MUTEX
-    mutex_unlock(&the_mutex);
-#endif // USE_DSI_MUTEX
 
 	list_for_each_entry(iter, &dsi->bridge_chain, chain_node) {
 		if (iter->funcs->enable)
@@ -1196,16 +1159,11 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	bool is_long = mipi_dsi_packet_format_is_long(msg->type);
 	u32 cmd_fifo_len = 0, pix_fifo_len = 0;
 
-#ifdef USE_DSI_MUTEX
-	mutex_lock(&the_mutex);
-#endif // USE_DSI_MUTEX
-
 	mipi_dsi_create_packet(&packet, msg);
 
 	pkth |= VC4_SET_FIELD(packet.header[0], DSI_TXPKT1H_BC_DT);
-	pkth |= VC4_SET_FIELD(packet.header[1] |
-			      (packet.header[2] << 8),
-			      DSI_TXPKT1H_BC_PARAM);
+	pkth |= VC4_SET_FIELD(packet.header[1] | (packet.header[2] << 8), DSI_TXPKT1H_BC_PARAM);
+
 	if (is_long) {
 		/* Divide data across the various FIFOs we have available.
 		 * The command FIFO takes byte-oriented data, but is of
@@ -1232,11 +1190,9 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	}
 
 	if (msg->rx_len) {
-		pktc |= VC4_SET_FIELD(DSI_TXPKT1C_CMD_CTRL_RX,
-				      DSI_TXPKT1C_CMD_CTRL);
+		pktc |= VC4_SET_FIELD(DSI_TXPKT1C_CMD_CTRL_RX, DSI_TXPKT1C_CMD_CTRL);
 	} else {
-		pktc |= VC4_SET_FIELD(DSI_TXPKT1C_CMD_CTRL_TX,
-				      DSI_TXPKT1C_CMD_CTRL);
+		pktc |= VC4_SET_FIELD(DSI_TXPKT1C_CMD_CTRL_TX, DSI_TXPKT1C_CMD_CTRL);
 	}
 
 	for (i = 0; i < cmd_fifo_len; i++)
@@ -1274,26 +1230,20 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	dsi->xfer_result = 0;
 	reinit_completion(&dsi->xfer_completion);
 	if (dsi->variant->port == 0) {
-		DSI_PORT_WRITE(INT_STAT,
-			       DSI0_INT_CMDC_DONE_MASK | DSI1_INT_PHY_DIR_RTF);
+		DSI_PORT_WRITE(INT_STAT, DSI0_INT_CMDC_DONE_MASK | DSI1_INT_PHY_DIR_RTF);
+
 		if (msg->rx_len) {
-			DSI_PORT_WRITE(INT_EN, (DSI0_INTERRUPTS_ALWAYS_ENABLED |
-						DSI0_INT_PHY_DIR_RTF));
+			DSI_PORT_WRITE(INT_EN, (DSI0_INTERRUPTS_ALWAYS_ENABLED | DSI0_INT_PHY_DIR_RTF));
 		} else {
-			DSI_PORT_WRITE(INT_EN,
-				       (DSI0_INTERRUPTS_ALWAYS_ENABLED |
-					VC4_SET_FIELD(DSI0_INT_CMDC_DONE_NO_REPEAT,
-						      DSI0_INT_CMDC_DONE)));
+			DSI_PORT_WRITE(INT_EN, (DSI0_INTERRUPTS_ALWAYS_ENABLED | VC4_SET_FIELD(DSI0_INT_CMDC_DONE_NO_REPEAT, DSI0_INT_CMDC_DONE)));
 		}
 	} else {
-		DSI_PORT_WRITE(INT_STAT,
-			       DSI1_INT_TXPKT1_DONE | DSI1_INT_PHY_DIR_RTF);
+		DSI_PORT_WRITE(INT_STAT, DSI1_INT_TXPKT1_DONE | DSI1_INT_PHY_DIR_RTF);
+
 		if (msg->rx_len) {
-			DSI_PORT_WRITE(INT_EN, (DSI1_INTERRUPTS_ALWAYS_ENABLED |
-						DSI1_INT_PHY_DIR_RTF));
+			DSI_PORT_WRITE(INT_EN, (DSI1_INTERRUPTS_ALWAYS_ENABLED | DSI1_INT_PHY_DIR_RTF));
 		} else {
-			DSI_PORT_WRITE(INT_EN, (DSI1_INTERRUPTS_ALWAYS_ENABLED |
-						DSI1_INT_TXPKT1_DONE));
+			DSI_PORT_WRITE(INT_EN, (DSI1_INTERRUPTS_ALWAYS_ENABLED | DSI1_INT_TXPKT1_DONE));
 		}
 	}
 
@@ -1301,8 +1251,7 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	DSI_PORT_WRITE(TXPKT1H, pkth);
 	DSI_PORT_WRITE(TXPKT1C, pktc);
 
-	if (!wait_for_completion_timeout(&dsi->xfer_completion,
-					 msecs_to_jiffies(1000))) {
+	if (!wait_for_completion_timeout(&dsi->xfer_completion, msecs_to_jiffies(1000))) {
 		dev_err(&dsi->pdev->dev, "transfer interrupt wait timeout");
 		dev_err(&dsi->pdev->dev, "instat: 0x%08x\n",
 			DSI_PORT_READ(INT_STAT));
@@ -1345,10 +1294,6 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 		}
 	}
 
-#ifdef USE_DSI_MUTEX
-    mutex_unlock(&the_mutex);
-#endif // USE_DSI_MUTEX
-
 	return ret;
 
 reset_fifo_and_return:
@@ -1356,16 +1301,10 @@ reset_fifo_and_return:
 
 	DSI_PORT_WRITE(TXPKT1C, DSI_PORT_READ(TXPKT1C) & ~DSI_TXPKT1C_CMD_EN);
 	udelay(1);
-	DSI_PORT_WRITE(CTRL,
-		       DSI_PORT_READ(CTRL) |
-		       DSI_PORT_BIT(CTRL_RESET_FIFOS));
+	DSI_PORT_WRITE(CTRL, DSI_PORT_READ(CTRL) | DSI_PORT_BIT(CTRL_RESET_FIFOS));
 
 	DSI_PORT_WRITE(TXPKT1C, 0);
 	DSI_PORT_WRITE(INT_EN, DSI_PORT_BIT(INTERRUPTS_ALWAYS_ENABLED));
-
-#ifdef USE_DSI_MUTEX
-    mutex_unlock(&the_mutex);
-#endif // USE_DSI_MUTEX
 
 	return ret;
 }
@@ -1473,14 +1412,13 @@ static void dsi_handle_error(struct vc4_dsi *dsi,
  * Initial handler for port 1 where we need the reg_dma workaround.
  * The register DMA writes sleep, so we can't do it in the top half.
  * Instead we use IRQF_ONESHOT so that the IRQ gets disabled in the
- * parent interrupt contrller until our interrupt thread is done.
+ * parent interrupt controller until our interrupt thread is done.
  */
 static irqreturn_t vc4_dsi_irq_defer_to_thread_handler(int irq, void *data)
 {
 	struct vc4_dsi *dsi = data;
 
 	u32 stat = DSI_PORT_READ(INT_STAT);
-
 	if (!stat)
 		return IRQ_NONE;
 
@@ -1494,10 +1432,12 @@ static irqreturn_t vc4_dsi_irq_defer_to_thread_handler(int irq, void *data)
 static irqreturn_t vc4_dsi_irq_handler(int irq, void *data)
 {
 	struct vc4_dsi *dsi = data;
-	u32 stat = DSI_PORT_READ(INT_STAT);
-	irqreturn_t ret = IRQ_NONE;
 
-	DSI_PORT_WRITE(INT_STAT, stat);
+    u32 stat;
+    irqreturn_t ret = IRQ_NONE;
+
+    stat = DSI_PORT_READ(INT_STAT);
+    DSI_PORT_WRITE(INT_STAT, stat);
 
 	dsi_handle_error(dsi, &ret, stat,
 			 DSI_PORT_BIT(INT_ERR_SYNC_ESC), "LPDT sync");
@@ -1516,9 +1456,7 @@ static irqreturn_t vc4_dsi_irq_handler(int irq, void *data)
 	dsi_handle_error(dsi, &ret, stat,
 			 DSI_PORT_BIT(INT_PR_TO), "peripheral reset timeout");
 
-	if (stat & ((dsi->variant->port ? DSI1_INT_TXPKT1_DONE :
-					  DSI0_INT_CMDC_DONE_MASK) |
-		    DSI_PORT_BIT(INT_PHY_DIR_RTF))) {
+	if (stat & ((dsi->variant->port ? DSI1_INT_TXPKT1_DONE : DSI0_INT_CMDC_DONE_MASK) | DSI_PORT_BIT(INT_PHY_DIR_RTF))) {
 		complete(&dsi->xfer_completion);
 		ret = IRQ_HANDLED;
 	} else if (stat & DSI_PORT_BIT(INT_HSTX_TO)) {
@@ -1801,10 +1739,6 @@ static int vc4_dsi_dev_probe(struct platform_device *pdev)
 	struct vc4_dsi *dsi;
 	int ret;
 
-#ifdef USE_DSI_MUTEX
-	mutex_init(&the_mutex);
-#endif // USE_DSI_MUTEX
-
 	dsi = devm_kzalloc(dev, sizeof(*dsi), GFP_KERNEL);
 	if (!dsi)
 		return -ENOMEM;
@@ -1830,8 +1764,6 @@ static int vc4_dsi_dev_probe(struct platform_device *pdev)
 		mipi_dsi_host_unregister(&dsi->dsi_host);
 		return ret;
 	}
-
-
 
 	return 0;
 }
