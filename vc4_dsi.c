@@ -1317,6 +1317,7 @@ reset_fifo_and_return:
 
 // ****************************************************************************
 
+#ifdef RESET_FAILED_TRANSFER
 
 	/* Reset the DSI and all its fifos. */
 	DSI_PORT_WRITE(CTRL,
@@ -1529,6 +1530,7 @@ reset_fifo_and_return:
 			       DSI_DISP0_ENABLE);
 	}
 
+	#endif
 
 // *****************************************************************************
 
