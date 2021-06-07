@@ -1159,12 +1159,15 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	u32 cmd_fifo_len = 0, pix_fifo_len = 0;
 
 	struct device *dev = &dsi->pdev->dev;
+	struct drm_display_mode *mode = &dsi->encoder->crtc->state->adjusted_mode;
     unsigned long hs_clock;
 	u32 ui_ns;
 	/* Minimum LP state duration in escape clock cycles. */
 	u32 lpx = dsi_esc_timing(60);
+	unsigned long pixel_clock_hz = mode->clock * 1000;
 	unsigned long dsip_clock;
 	unsigned long phy_clock;
+	//struct vc4_dsi_encoder *vc4_encoder = to_vc4_dsi_encoder(dsi->encoder);
 
 
 	mipi_dsi_create_packet(&packet, msg);
@@ -1317,7 +1320,16 @@ reset_fifo_and_return:
 
 // ****************************************************************************
 
+
+#define RESET_FAILED_TRANSFER 1
 #ifdef RESET_FAILED_TRANSFER
+
+    phy_clock = (pixel_clock_hz + 1000) * dsi->divider;
+	rete = clk_set_rate(dsi->pll_phy_clock, phy_clock);
+	if (rete) {
+		dev_err(&dsi->pdev->dev,
+			"Failed to set phy clock to %ld: %d\n", phy_clock, rete);
+	}
 
 	/* Reset the DSI and all its fifos. */
 	DSI_PORT_WRITE(CTRL,
