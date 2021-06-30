@@ -632,9 +632,10 @@ dsi_dma_workaround_write(struct vc4_dsi *dsi, u32 offset, u32 val)
 		DRM_ERROR("Failed to submit DMA: %d\n", ret);
 		return;
 	}
-	ret = dma_sync_wait(chan, cookie);
-	if (ret)
-		DRM_ERROR("Failed to wait for DMA: %d\n", ret);
+
+    ret = dma_sync_wait(chan, cookie);
+    if (ret)
+        DRM_ERROR("Failed to wait for DMA: %d\n", ret);
 }
 
 #define DSI_READ(offset) readl(dsi->regs + (offset))
@@ -857,11 +858,10 @@ static bool vc4_dsi_encoder_mode_fixup(struct drm_encoder *encoder,
 	/* Find what divider gets us a faster clock than the requested
 	 * pixel clock.
 	 */
-	for (divider = 1; divider < 8; divider++) {
-		if (parent_rate / divider < pll_clock) {
-			divider--;
+
+	for (divider = 1; divider < 7; divider++) {
+		if (parent_rate / (divider + 1) < pll_clock)
 			break;
-		}
 	}
 
 	/* Now that we've picked a PLL divider, calculate back to its
@@ -1073,7 +1073,7 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	 * conservative 5ms, and we maintain that here.
 	 */
 	DSI_PORT_WRITE(HS_DLT5, VC4_SET_FIELD(dsi_hs_timing(ui_ns,
-							    5 * 1000 * 1000, 0),
+							    10 * 1000 * 1000, 0),
 					      DSI_HS_DLT5_INIT));
 
 	DSI_PORT_WRITE(HS_DLT6,
@@ -1107,9 +1107,9 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	/* LP receive timeout in HS clocks. */
 	DSI_PORT_WRITE(LPRX_TO_CNT, 0xffffff);
 	/* Bus turnaround timeout */
-	DSI_PORT_WRITE(TA_TO_CNT, 100000);
+	DSI_PORT_WRITE(TA_TO_CNT, 1000000);
 	/* Display reset sequence timeout */
-	DSI_PORT_WRITE(PR_TO_CNT, 100000);
+	DSI_PORT_WRITE(PR_TO_CNT, 1000000);
 
 	/* Set up DISP1 for transferring long command payloads through
 	 * the pixfifo.
@@ -1138,14 +1138,25 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	}
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
+
 		DSI_PORT_WRITE(DISP0_CTRL,
 			       VC4_SET_FIELD(dsi->divider,
 					     DSI_DISP0_PIX_CLK_DIV) |
 			       VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
-			       VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME,
-					     DSI_DISP0_LP_STOP_CTRL) |
+			       VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME, DSI_DISP0_LP_STOP_CTRL) |
 			       DSI_DISP0_ST_END |
 			       DSI_DISP0_ENABLE);
+
+        /*
+        DSI_PORT_WRITE(DISP0_CTRL,VC4_SET_FIELD(dsi->divider, DSI_DISP0_PIX_CLK_DIV) |
+			         VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
+			         VC4_SET_FIELD(DSI_DISP0_LP_STOP_DISABLE, DSI_DISP0_LP_STOP_CTRL) |
+			         //VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME, DSI_DISP0_LP_STOP_CTRL) |
+   			         DSI_DISP_VBLP_CTRL |
+   			         DSI_DISP_HACTIVE_NULL |
+                     DSI_DISP0_ST_END |
+			         DSI_DISP0_ENABLE);
+        */
 	} else {
 		DSI_PORT_WRITE(DISP0_CTRL,
 			       DSI_DISP0_COMMAND_MODE |
@@ -1235,7 +1246,11 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	/* Send one copy of the packet.  Larger repeats are used for pixel
 	 * data in command mode.
 	 */
-	pktc |= VC4_SET_FIELD(1, DSI_TXPKT1C_CMD_REPEAT);
+
+    if (is_long)
+        pktc |= VC4_SET_FIELD(1, DSI_TXPKT1C_CMD_REPEAT);
+    else
+        pktc |= VC4_SET_FIELD(3, DSI_TXPKT1C_CMD_REPEAT);
 
 	pktc |= DSI_TXPKT1C_CMD_EN;
 	if (pix_fifo_len) {
